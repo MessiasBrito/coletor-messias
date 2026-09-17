@@ -1,11 +1,21 @@
 (function(){
 "use strict";
 
-/* ============ CONFIG / CLIENTE SUPABASE ============ */
+/* ============ CONFIG / CLIENTE SUPABASE ============
+   Dois bancos, dois clientes:
+   - "sb": banco DESTE sistema (INVENTRA) — armazenagem/separação/conferência.
+   - "sbDarvik": banco do DARVIK (DarvikControl) — usado só para o login,
+     assim o mesmo usuário/senha do DARVIK funciona aqui (Versão 19). */
 var CFG = window.COLETOR_CONFIG || {};
 var sb = null;
 if(CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY){
   sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
+}
+var sbDarvik = null;
+if(CFG.DARVIK_SUPABASE_URL && CFG.DARVIK_SUPABASE_ANON_KEY){
+  sbDarvik = window.supabase.createClient(CFG.DARVIK_SUPABASE_URL, CFG.DARVIK_SUPABASE_ANON_KEY, {
+    auth: { storageKey: 'darvik-auth-coletor' }
+  });
 }
 
 /* ============ SESSÃO ============ */
@@ -85,10 +95,20 @@ function beep(ok){
 
 /* ============ AÇÕES DE BANCO (Supabase) ============ */
 var DB = {
+  /* Login de verdade contra o DARVIK (Supabase Auth), não mais contra a
+     tabela "colaboradores" deste projeto. Passos: 1) traduz o usuário
+     digitado no e-mail interno via a view pública "login_lookup"; 2)
+     autentica de verdade com signInWithPassword; 3) busca nome/função em
+     "profiles". Mesma lógica que o site DARVIK já usa na tela de login. */
   async login(username, password){
-    var r = await sb.rpc('verify_login', { p_username: username, p_password: password });
-    if(r.error) throw r.error;
-    return (r.data && r.data[0]) || null;
+    var uname = String(username||'').trim().toLowerCase();
+    var lookup = await sbDarvik.from('login_lookup').select('email').eq('login', uname).maybeSingle();
+    if(lookup.error || !lookup.data) return null;
+    var signIn = await sbDarvik.auth.signInWithPassword({ email: lookup.data.email, password: password });
+    if(signIn.error) return null;
+    var prof = await sbDarvik.from('profiles').select('*').eq('login', uname).maybeSingle();
+    if(prof.error || !prof.data || !prof.data.active){ try{ await sbDarvik.auth.signOut(); }catch(e){} return null; }
+    return { id: prof.data.legacy_id, name: prof.data.name, role: prof.data.role };
   },
   async products(){ var r = await sb.from('produtos').select('*'); if(r.error) throw r.error; return r.data; },
   async locations(){ var r = await sb.from('localizacoes').select('*'); if(r.error) throw r.error; return r.data; },
@@ -134,7 +154,7 @@ function auditCtx(){ return { user_id: SESSION?SESSION.id:null, user_name: SESSI
 var app = document.getElementById('app');
 function renderApp(){
   app.innerHTML = '';
-  if(!sb){ renderConfigMissing(); return; }
+  if(!sb || !sbDarvik){ renderConfigMissing(); return; }
   if(!SESSION){ renderLogin(); return; }
   renderHome();
 }
@@ -143,7 +163,7 @@ function renderConfigMissing(){
   app.innerHTML =
     '<div class="center-msg">'+
       '<h3>Configuração pendente</h3>'+
-      '<p>Preencha SUPABASE_URL e SUPABASE_ANON_KEY no arquivo <code>config.js</code> para ativar o coletor.</p>'+
+      '<p>Preencha SUPABASE_URL/SUPABASE_ANON_KEY e DARVIK_SUPABASE_URL/DARVIK_SUPABASE_ANON_KEY no arquivo <code>config.js</code> para ativar o coletor.</p>'+
     '</div>';
 }
 
@@ -202,7 +222,11 @@ function renderHome(){
   document.getElementById('op-armazenagem').addEventListener('click', ArmazenagemFlow.start);
   document.getElementById('op-separacao').addEventListener('click', SeparacaoFlow.list);
   document.getElementById('op-conferencia').addEventListener('click', ConferenciaFlow.list);
-  document.getElementById('btn-logout').addEventListener('click', function(){ clearSession(); renderApp(); });
+  document.getElementById('btn-logout').addEventListener('click', function(){
+    clearSession();
+    if(sbDarvik) sbDarvik.auth.signOut().catch(function(){});
+    renderApp();
+  });
 }
 function bindBack(fn){
   var b = document.getElementById('btn-back');
