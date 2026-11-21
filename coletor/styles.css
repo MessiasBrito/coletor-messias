@@ -145,3 +145,10 @@ button{cursor:pointer;}
 
 .center-msg{padding:60px 20px; text-align:center; color:var(--text-dim);}
 .mt8{margin-top:8px;}
+
+/* ---- armazenagem: lista de pendências ---- */
+.list-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px;}
+.list-count{font-size:14px; color:var(--text-dim);}
+.list-count strong{font-family:'Manrope',sans-serif; font-size:22px; color:var(--text); margin-right:2px;}
+.filter-note{font-size:13px; background:var(--accent-bg); color:var(--accent); border-radius:9px; padding:8px 12px; margin-bottom:12px;}
+.link-btn{background:none; border:none; color:var(--accent); font-weight:700; text-decoration:underline; padding:0 0 0 6px; font-size:13px;}
