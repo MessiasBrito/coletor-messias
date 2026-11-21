@@ -428,75 +428,95 @@ function ensureJsQr(cb){
   tryNext();
 }
 
-/* ============ ARMAZENAGEM ============ */
+/* ============ ARMAZENAGEM ============
+   Igual à Separação: a tela mostra TODAS as armazenagens pendentes (uma por
+   item recebido) e o operador escolhe qual iniciar — por exemplo, a que tem
+   prioridade. O botão "Bipar item" continua existindo, mas agora só serve
+   para filtrar a lista pelo produto bipado (não é mais obrigatório). */
 var ArmazenagemFlow = (function(){
-  function start(){ renderScanItem(); }
+  var refs = { products:null, locations:null };
+  var currentFilter = null;   // id do produto bipado para filtrar (ou null = todas)
 
-  function renderScanItem(){
+  function start(){ currentFilter = null; renderList(); }
+
+  function loadRefs(){
+    return Promise.all([DB.products(), DB.locations()]).then(function(r){ refs.products = r[0]; refs.locations = r[1]; });
+  }
+  function taskOrder(t){ var m = /(\d+)\s*$/.exec(String(t.id)); return m ? Number(m[1]) : 0; }
+
+  function renderList(){
     app.innerHTML =
-      topbarHtml('Armazenagem', {back:true, sub:'Bipe o item recebido'}) +
-      '<div class="view"><div id="scan-area"></div></div>';
+      topbarHtml('Armazenagem', {back:true, sub:'Escolha qual armazenar'}) +
+      '<div class="view"><div id="list-area"><div class="center-msg"><span class="spinner"></span></div></div></div>';
     bindBack(renderHome);
-    var products = null, locations = null;
-    Promise.all([DB.products(), DB.locations()]).then(function(res){
-      products = res[0]; locations = res[1];
-      mountScanStep({
-        containerId: 'scan-area',
-        title: 'Identificar item',
-        subtitle: 'Bipe o QR Code ou SKU do produto recebido',
-        instruction: 'Aponte a câmera para o QR Code do item, ou digite o SKU.',
-        expectedDisplay: '(qualquer produto cadastrado)',
-        validate: function(code){
-          var p = findProductByCode(products, code);
-          return p ? { ok:true, matched:p } : { ok:false, gotDisplay: code };
-        },
-        onAccept: function(product){
-          handleProductScanned(product, locations);
-          return false;
-        }
-      });
-    }).catch(function(){ document.getElementById('scan-area').innerHTML = '<div class="error-msg">Não foi possível carregar os dados. Verifique sua internet.</div>'; });
-  }
-
-  function handleProductScanned(product, locations){
-    document.getElementById('scan-area').innerHTML = '<div class="center-msg"><span class="spinner"></span></div>';
-    DB.pendingStorageTasks().then(function(tasks){
-      var mine = tasks.filter(function(t){ return t.product_id===product.id; });
-      if(mine.length===0){
-        toast('Nenhuma armazenagem pendente para "'+product.name+'".', 'bad');
-        renderScanItem();
-        return;
+    Promise.all([loadRefs(), DB.pendingStorageTasks()]).then(function(res){
+      var all = res[1].slice().sort(function(a,b){ return taskOrder(a)-taskOrder(b); });
+      var tasks = currentFilter ? all.filter(function(t){ return t.product_id===currentFilter; }) : all;
+      var area = document.getElementById('list-area');
+      var html = '<div class="list-head"><div class="list-count"><strong>'+all.length+'</strong> '+(all.length===1?'armazenagem pendente':'armazenagens pendentes')+'</div>'+
+                 '<button class="btn btn-sm" id="btn-scan-filter">📷 Bipar item</button></div>';
+      if(currentFilter){
+        var fp = refs.products.find(function(p){ return p.id===currentFilter; });
+        html += '<div class="filter-note">Mostrando só: <strong>'+esc(fp?fp.name:'(produto)')+'</strong> <button class="link-btn" id="btn-clear-filter">Ver todas</button></div>';
       }
-      var byVariation = {};
-      mine.forEach(function(t){
-        var key = t.variation_id || '__none__';
-        if(!byVariation[key]) byVariation[key] = { variationId: t.variation_id||null, qty:0, taskIds:[], suggestedLocationId:null };
-        byVariation[key].qty += Number(t.qty_pending);
-        byVariation[key].taskIds.push(t.id);
-        if(!byVariation[key].suggestedLocationId) byVariation[key].suggestedLocationId = t.suggested_location_id;
+      if(tasks.length===0){
+        html += '<div class="empty-state">'+(currentFilter?'Nenhuma armazenagem pendente para este item.':'Nenhuma armazenagem pendente.')+'</div>';
+      } else {
+        html += tasks.map(function(t){
+          var p = refs.products.find(function(x){ return x.id===t.product_id; });
+          var loc = t.suggested_location_id ? refs.locations.find(function(l){ return l.id===t.suggested_location_id; }) : null;
+          return '<div class="list-item"><div><div class="code">'+esc(productLabel(p, t.variation_id))+'</div>'+
+                 '<div class="meta">'+Number(t.qty_pending)+' un. · '+(loc?'Sugerido: '+esc(loc.code):'Sem local sugerido')+'</div><div class="meta">Ref. '+esc(t.po_id||'—')+'</div></div>'+
+                 '<button class="btn btn-primary btn-sm" data-open="'+esc(t.id)+'">Iniciar</button></div>';
+        }).join('');
+      }
+      area.innerHTML = html;
+      document.getElementById('btn-scan-filter').addEventListener('click', renderScanFilter);
+      var clr = document.getElementById('btn-clear-filter');
+      if(clr) clr.addEventListener('click', function(){ currentFilter = null; renderList(); });
+      area.querySelectorAll('[data-open]').forEach(function(b){
+        b.addEventListener('click', function(){
+          var id = b.getAttribute('data-open');
+          var t = all.find(function(x){ return x.id===id; });
+          if(t) openTask(t);
+        });
       });
-      var groups = Object.keys(byVariation).map(function(k){ return byVariation[k]; });
-      if(groups.length===1){ runStorageGroup(product, groups[0], locations); }
-      else { renderVariationPicker(product, groups, locations); }
-    }).catch(function(){ toast('Erro ao consultar tarefas de armazenagem.','bad'); renderScanItem(); });
+    }).catch(function(){ document.getElementById('list-area').innerHTML = '<div class="error-msg">Erro ao carregar as armazenagens. Verifique sua internet.</div>'; });
   }
 
-  function renderVariationPicker(product, groups, locations){
-    var html = topbarHtml('Armazenagem', {back:true, sub:product.name}) +
-      '<div class="view"><p>Este item tem mais de uma variação pendente. Selecione qual está em mãos:</p>';
-    groups.forEach(function(g, idx){
-      html += '<button class="varpick-item" data-idx="'+idx+'"><strong>'+esc(variationName(product,g.variationId)||'(sem variação)')+'</strong><div class="info" style="color:var(--text-dim);font-size:12.5px">Quantidade: '+g.qty+'</div></button>';
-    });
-    html += '</div>';
-    app.innerHTML = html;
-    bindBack(renderScanItem);
-    document.querySelectorAll('.varpick-item').forEach(function(b){
-      b.addEventListener('click', function(){ runStorageGroup(product, groups[Number(b.getAttribute('data-idx'))], locations); });
+  /* Bipar o item serve só para filtrar a lista pelo produto. */
+  function renderScanFilter(){
+    app.innerHTML =
+      topbarHtml('Armazenagem', {back:true, sub:'Bipe o item para filtrar a lista'}) +
+      '<div class="view"><div id="scan-area"></div></div>';
+    bindBack(renderList);
+    mountScanStep({
+      containerId: 'scan-area',
+      title: 'Filtrar por item',
+      subtitle: 'Bipe o QR Code ou SKU do produto',
+      instruction: 'Aponte a câmera para o QR Code do item, ou digite o SKU.',
+      expectedDisplay: '(qualquer produto cadastrado)',
+      validate: function(code){
+        var p = findProductByCode(refs.products, code);
+        return p ? { ok:true, matched:p } : { ok:false, gotDisplay: code };
+      },
+      onAccept: function(product){ currentFilter = product.id; renderList(); return false; }
     });
   }
 
-  function runStorageGroup(product, group, locations){
-    var chosenLocation = null;
+  function openTask(t){
+    var product = refs.products.find(function(p){ return p.id===t.product_id; });
+    if(!product){ toast('Produto desta armazenagem não foi encontrado.','bad'); return; }
+    runStorageTask(product, {
+      variationId: t.variation_id || null,
+      qty: Number(t.qty_pending),
+      taskIds: [t.id],
+      suggestedLocationId: t.suggested_location_id
+    });
+  }
+
+  function runStorageTask(product, group){
+    var locations = refs.locations, chosenLocation = null;
     renderLocationStep();
 
     function renderLocationStep(){
@@ -507,7 +527,7 @@ var ArmazenagemFlow = (function(){
           (suggested ? '<p>Local sugerido: <strong>'+esc(suggested.code)+'</strong></p>' : '<p>Nenhum local sugerido automaticamente — bipe a prateleira onde vai guardar.</p>')+
           '<div id="scan-area"></div>'+
         '</div>';
-      bindBack(renderScanItem);
+      bindBack(renderList);
       mountScanStep({
         containerId: 'scan-area',
         title: productLabel(product, group.variationId),
@@ -541,7 +561,7 @@ var ArmazenagemFlow = (function(){
           .then(function(){ return DB.addMovement(Object.assign({ type:'entrada', product_id:product.id, variation_id:group.variationId, quantity:group.qty, location_id:chosenLocation.id, ref_type:'armazenagem_coletor', note:'Armazenagem via coletor' }, auditCtx())); })
           .then(function(){ return DB.closeStorageTasks(group.taskIds); })
           .then(function(){ return DB.addAudit(Object.assign({ action:'Armazenou item', entity_type:'estoque', entity_id:product.id, details: group.qty+' un. em '+chosenLocation.code }, auditCtx())); })
-          .then(function(){ toast('Item armazenado com sucesso.','good'); renderScanItem(); })
+          .then(function(){ toast('Item armazenado com sucesso.','good'); renderList(); })
           .catch(function(){ toast('Erro ao salvar. Tente novamente.','bad'); btn.disabled=false; btn.textContent='Confirmar armazenagem'; });
       });
     }
