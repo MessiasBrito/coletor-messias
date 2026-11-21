@@ -113,6 +113,63 @@ var DB = {
   async products(){ var r = await sb.from('produtos').select('*'); if(r.error) throw r.error; return r.data; },
   async locations(){ var r = await sb.from('localizacoes').select('*'); if(r.error) throw r.error; return r.data; },
   async pendingStorageTasks(){ var r = await sb.from('tarefas_armazenagem').select('*').eq('status','PENDENTE'); if(r.error) throw r.error; return r.data; },
+  /* Auto-reparo da ponte: o coletor confere, direto no banco do DARVIK (já
+     está logado nele), se existe armazenagem PENDENTE que ainda não chegou
+     aqui — por exemplo, se o aviso automático falhou ou o projeto estava
+     pausado — e traz o que faltar (junto com o produto/localização, se
+     também faltarem). Nunca apaga nem reabre nada; só inclui o que falta.
+     Devolve quantas armazenagens novas foram trazidas. */
+  async syncStorageFromDarvik(){
+    if(!sbDarvik || !sb) return 0;
+    var ses = await sbDarvik.auth.getSession();
+    if(!ses || !ses.data || !ses.data.session) return 0;
+    var rp = await sbDarvik.from('storage_tasks').select('*').eq('status','PENDENTE');
+    if(rp.error || !rp.data || !rp.data.length) return 0;
+    var ids = rp.data.map(function(t){ return t.id; });
+    var rc = await sb.from('tarefas_armazenagem').select('id').in('id', ids);
+    if(rc.error) return 0;
+    var have = {}; (rc.data||[]).forEach(function(r){ have[r.id] = 1; });
+    var miss = rp.data.filter(function(t){ return !have[t.id]; });
+    if(!miss.length) return 0;
+    // produtos e localizações que as tarefas novas usam e que faltam aqui
+    var pIds = [], lIds = [];
+    miss.forEach(function(t){
+      if(t.product_id && pIds.indexOf(t.product_id)<0) pIds.push(t.product_id);
+      if(t.suggested_location_id && lIds.indexOf(t.suggested_location_id)<0) lIds.push(t.suggested_location_id);
+    });
+    if(pIds.length){
+      var hp = await sb.from('produtos').select('id').in('id', pIds);
+      var hasP = {}; ((hp.data)||[]).forEach(function(r){ hasP[r.id]=1; });
+      var needP = pIds.filter(function(i){ return !hasP[i]; });
+      if(needP.length){
+        var dp = await sbDarvik.from('products').select('*').in('id', needP);
+        if(dp.data && dp.data.length){
+          await sb.from('produtos').upsert(dp.data.map(function(p){
+            return { id:p.id, sku:p.sku, name:p.name, category_id:p.category_id, brand:p.brand, price:p.price, variations:p.variations||[], created_at:p.created_at };
+          }), { onConflict:'id', ignoreDuplicates:true });
+        }
+      }
+    }
+    if(lIds.length){
+      var hl = await sb.from('localizacoes').select('id').in('id', lIds);
+      var hasL = {}; ((hl.data)||[]).forEach(function(r){ hasL[r.id]=1; });
+      var needL = lIds.filter(function(i){ return !hasL[i]; });
+      if(needL.length){
+        var dl = await sbDarvik.from('locations').select('*').in('id', needL);
+        if(dl.data && dl.data.length){
+          await sb.from('localizacoes').upsert(dl.data.map(function(l){
+            return { id:l.id, corridor:l.corridor, shelf:l.shelf, level:l.level, capacity:l.capacity, code:l.code, qr_payload:l.qr_payload };
+          }), { onConflict:'id', ignoreDuplicates:true });
+        }
+      }
+    }
+    var ins = await sb.from('tarefas_armazenagem').upsert(miss.map(function(t){
+      return { id:t.id, po_id:t.po_id, po_item_id:t.po_item_id, product_id:t.product_id, variation_id:t.variation_id,
+               qty_pending:t.qty_pending, suggested_location_id:t.suggested_location_id, status:'PENDENTE' };
+    }), { onConflict:'id', ignoreDuplicates:true });
+    if(ins.error) return 0;
+    return miss.length;
+  },
   async closeStorageTasks(ids){ var r = await sb.from('tarefas_armazenagem').update({status:'CONCLUIDO', qty_pending:0}).in('id', ids); if(r.error) throw r.error; },
   async stockFor(productId, variationId, locationId){
     var q = sb.from('estoque').select('*').eq('product_id', productId).eq('location_id', locationId);
@@ -449,12 +506,15 @@ var ArmazenagemFlow = (function(){
       topbarHtml('Armazenagem', {back:true, sub:'Escolha qual armazenar'}) +
       '<div class="view"><div id="list-area"><div class="center-msg"><span class="spinner"></span></div></div></div>';
     bindBack(renderHome);
-    Promise.all([loadRefs(), DB.pendingStorageTasks()]).then(function(res){
+    DB.syncStorageFromDarvik().catch(function(){ return 0; }).then(function(novas){
+      return Promise.all([loadRefs(), DB.pendingStorageTasks()]).then(function(res){ res.novas = novas; return res; });
+    }).then(function(res){
+      if(res.novas>0) toast(res.novas+(res.novas===1?' armazenagem nova trazida':' armazenagens novas trazidas')+' do painel.','good');
       var all = res[1].slice().sort(function(a,b){ return taskOrder(a)-taskOrder(b); });
       var tasks = currentFilter ? all.filter(function(t){ return t.product_id===currentFilter; }) : all;
       var area = document.getElementById('list-area');
       var html = '<div class="list-head"><div class="list-count"><strong>'+all.length+'</strong> '+(all.length===1?'armazenagem pendente':'armazenagens pendentes')+'</div>'+
-                 '<button class="btn btn-sm" id="btn-scan-filter">📷 Bipar item</button></div>';
+                 '<div class="list-actions"><button class="btn btn-sm" id="btn-refresh">↻</button><button class="btn btn-sm" id="btn-scan-filter">📷 Bipar item</button></div></div>';
       if(currentFilter){
         var fp = refs.products.find(function(p){ return p.id===currentFilter; });
         html += '<div class="filter-note">Mostrando só: <strong>'+esc(fp?fp.name:'(produto)')+'</strong> <button class="link-btn" id="btn-clear-filter">Ver todas</button></div>';
@@ -472,6 +532,7 @@ var ArmazenagemFlow = (function(){
       }
       area.innerHTML = html;
       document.getElementById('btn-scan-filter').addEventListener('click', renderScanFilter);
+      document.getElementById('btn-refresh').addEventListener('click', renderList);
       var clr = document.getElementById('btn-clear-filter');
       if(clr) clr.addEventListener('click', function(){ currentFilter = null; renderList(); });
       area.querySelectorAll('[data-open]').forEach(function(b){
