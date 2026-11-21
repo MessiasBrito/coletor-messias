@@ -152,3 +152,4 @@ button{cursor:pointer;}
 .list-count strong{font-family:'Manrope',sans-serif; font-size:22px; color:var(--text); margin-right:2px;}
 .filter-note{font-size:13px; background:var(--accent-bg); color:var(--accent); border-radius:9px; padding:8px 12px; margin-bottom:12px;}
 .link-btn{background:none; border:none; color:var(--accent); font-weight:700; text-decoration:underline; padding:0 0 0 6px; font-size:13px;}
+.list-actions{display:flex; gap:8px;}
