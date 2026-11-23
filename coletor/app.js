@@ -227,54 +227,93 @@ function renderConfigMissing(){
 /* ============ TOPBAR (usado dentro das telas internas) ============ */
 function topbarHtml(title, opts){
   opts = opts || {};
+  var ARROW_L = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>';
   return '<div class="topbar">'+
-    (opts.back ? '<button class="icon-btn" id="btn-back">←</button>' : '<span style="width:36px"></span>')+
-    '<div><h2>'+esc(title)+'</h2>'+(opts.sub?'<div class="who">'+esc(opts.sub)+'</div>':'')+'</div>'+
-    '<span style="width:36px"></span>'+
+    (opts.back ? '<button class="icon-btn" id="btn-back" aria-label="Voltar">'+ARROW_L+'</button>' : '<span class="tb-gap"></span>')+
+    '<div class="tb-title"><h2>'+esc(title)+'</h2>'+(opts.sub?'<div class="who">'+esc(opts.sub)+'</div>':'')+'</div>'+
+    '<span class="cl-pill tb-pill">Coletor</span>'+
   '</div>';
 }
 
 /* ============ LOGIN ============ */
 function renderLogin(){
+  var ICON_USER = '<svg class="i-left" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.4"/><path d="M4.5 20c0-3.9 3.4-7 7.5-7s7.5 3.1 7.5 7"/></svg>';
+  var ICON_LOCK = '<svg class="i-left" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>';
+  var ICON_ARROW = '<svg class="i-right" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+  var ICON_EYE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  var ICON_EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 3l18 18"/><path d="M10.6 5.7A10.6 10.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16.3 16.3 0 0 1-3.2 3.9M6.6 6.7C4 8.3 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.3 0 2.5-.3 3.5-.8"/></svg>';
+  var ICON_INFO = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8v.1"/></svg>';
+  var ARROW_BTN = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+
   app.innerHTML =
-    '<div class="login-wrap"><div class="login-card">'+
-      '<h1>Coletor</h1><div class="sub">Estoque Messias — Armazenagem · Separação · Conferência</div>'+
-      '<div id="login-error"></div>'+
-      '<div class="field"><label>Usuário</label><input type="text" id="f-user" autocomplete="username" autocapitalize="off"></div>'+
-      '<div class="field"><label>Senha</label><input type="password" id="f-pass" autocomplete="current-password"></div>'+
-      '<button class="btn btn-primary" id="btn-login">Entrar</button>'+
-    '</div></div>';
+    '<div id="login-screen">'+
+      '<div class="cl-top"><img class="cl-logo" alt="Darvik Logistics &amp; Technology"><div class="cl-pill">Coletor</div></div>'+
+      '<div class="cl-main">'+
+        '<p class="cl-sub">Faça login para continuar</p>'+
+        '<div class="cl-field"><label for="f-user">Usuário</label><div class="cl-input">'+ICON_USER+
+          '<input type="text" id="f-user" placeholder="Digite seu usuário de acesso" autocomplete="username" autocapitalize="off" autocorrect="off">'+ICON_ARROW+'</div></div>'+
+        '<div class="cl-field"><label for="f-pass">Senha</label><div class="cl-input">'+ICON_LOCK+
+          '<input type="password" id="f-pass" placeholder="Digite sua senha de acesso" autocomplete="current-password">'+
+          '<button type="button" class="cl-eye" id="btn-eye" aria-label="Mostrar ou ocultar a senha">'+ICON_EYE+'</button></div></div>'+
+        '<button type="button" class="cl-forgot" id="btn-forgot">Esqueceu a senha?</button>'+
+        '<div class="cl-error" id="login-error"></div>'+
+        '<button class="cl-submit" id="btn-login">Entrar '+ARROW_BTN+'</button>'+
+        '<div class="cl-note">'+ICON_INFO+'<div><b>Não tem um login?</b>Solicite seu acesso ao administrador do sistema.</div></div>'+
+      '</div>'+
+    '</div>';
+
   var userEl = document.getElementById('f-user'), passEl = document.getElementById('f-pass');
-  var btn = document.getElementById('btn-login');
+  var btn = document.getElementById('btn-login'), errEl = document.getElementById('login-error');
+  var BTN_HTML = btn.innerHTML;
+  function showLoginError(msg){ errEl.textContent = msg; errEl.style.display = 'block'; }
+  function resetBtn(){ btn.disabled = false; btn.innerHTML = BTN_HTML; }
   function attempt(){
+    errEl.style.display = 'none';
     var u = userEl.value.trim(), p = passEl.value;
     if(!u || !p){ showLoginError('Informe usuário e senha.'); return; }
     btn.disabled = true; btn.textContent = 'Entrando…';
     DB.login(u, p).then(function(user){
-      if(!user){ showLoginError('Usuário ou senha inválidos.'); btn.disabled=false; btn.textContent='Entrar'; return; }
+      if(!user){ showLoginError('Usuário ou senha inválidos.'); resetBtn(); return; }
       setSession(user);
       renderApp();
     }).catch(function(err){
       showLoginError('Não foi possível conectar ao servidor. Verifique sua internet.');
-      btn.disabled=false; btn.textContent='Entrar';
+      resetBtn();
     });
   }
-  function showLoginError(msg){ document.getElementById('login-error').innerHTML = '<div class="error-msg">'+esc(msg)+'</div>'; }
+  var visible = false;
+  document.getElementById('btn-eye').addEventListener('click', function(){
+    visible = !visible; passEl.type = visible ? 'text' : 'password'; this.innerHTML = visible ? ICON_EYE_OFF : ICON_EYE;
+  });
+  // A recuperação automática de senha ainda será construída; por ora orienta a falar com o administrador.
+  document.getElementById('btn-forgot').addEventListener('click', function(){ showLoginError('Para redefinir sua senha, fale com o administrador do sistema.'); });
   btn.addEventListener('click', attempt);
-  passEl.addEventListener('keydown', function(e){ if(e.key==='Enter') attempt(); });
+  userEl.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); passEl.focus(); } });
+  passEl.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); attempt(); } });
 }
 
 /* ============ HOME ============ */
+function firstName(n){
+  n = String(n||'').trim().split(/\s+/)[0] || 'operador';
+  return n.charAt(0).toUpperCase()+n.slice(1);
+}
 function renderHome(){
+  var IC_IN  = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8M8.5 8 12 11.5 15.5 8"/><path d="M3.5 13h4.2l1.2 2.2h6.2l1.2-2.2h4.2"/><path d="M3.5 13v5.5A1.5 1.5 0 0 0 5 20h14a1.5 1.5 0 0 0 1.5-1.5V13l-2.4-6.2"/></svg>';
+  var IC_OUT = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 11V3M8.5 6.5 12 3l3.5 3.5"/><path d="M3.5 13h4.2l1.2 2.2h6.2l1.2-2.2h4.2"/><path d="M3.5 13v5.5A1.5 1.5 0 0 0 5 20h14a1.5 1.5 0 0 0 1.5-1.5V13l-2.4-6.2"/></svg>';
+  var IC_CHK = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M9 4V2.8h6V4M8.2 13l2.9 2.9 5-5.4"/></svg>';
+  var CHEV = '<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+  var IC_LOGOUT = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M16 8l4 4-4 4M20 12H9"/></svg>';
   app.innerHTML =
-    topbarHtml('Estoque Messias', {sub: SESSION.name}) +
-    '<div class="view">'+
-      '<div class="op-grid">'+
-        '<button class="op-btn" id="op-armazenagem"><span class="ic">📥</span><div><div class="lbl">ARMAZENAGEM</div><div class="sub">Guardar itens recebidos</div></div></button>'+
-        '<button class="op-btn" id="op-separacao"><span class="ic">📤</span><div><div class="lbl">SEPARAÇÃO</div><div class="sub">Retirar itens para pedidos</div></div></button>'+
-        '<button class="op-btn" id="op-conferencia"><span class="ic">🔍</span><div><div class="lbl">CONFERÊNCIA</div><div class="sub">Conferir pedidos separados</div></div></button>'+
+    '<div class="cl-top home-top"><img class="home-mark" alt="Darvik"><div class="cl-pill">Coletor</div></div>'+
+    '<div class="view home-view">'+
+      '<div class="home-greet"><div class="home-hello">Olá, <b>'+esc(firstName(SESSION.name))+'</b></div>'+
+      '<p class="home-lead">Escolha a operação</p></div>'+
+      '<div class="home-center"><div class="op-grid">'+
+        '<button class="op-btn" id="op-armazenagem"><span class="ic">'+IC_IN+'</span><div><div class="lbl">Armazenagem</div><div class="sub">Guardar itens recebidos</div></div>'+CHEV+'</button>'+
+        '<button class="op-btn" id="op-separacao"><span class="ic">'+IC_OUT+'</span><div><div class="lbl">Separação</div><div class="sub">Retirar itens para pedidos</div></div>'+CHEV+'</button>'+
+        '<button class="op-btn" id="op-conferencia"><span class="ic">'+IC_CHK+'</span><div><div class="lbl">Conferência</div><div class="sub">Conferir pedidos separados</div></div>'+CHEV+'</button>'+
       '</div>'+
-      '<button class="btn btn-ghost" style="margin-top:22px" id="btn-logout">Sair</button>'+
+      '<button class="home-logout" id="btn-logout">'+IC_LOGOUT+' Sair</button></div>'+
     '</div>';
   document.getElementById('op-armazenagem').addEventListener('click', ArmazenagemFlow.start);
   document.getElementById('op-separacao').addEventListener('click', SeparacaoFlow.list);
