@@ -108,7 +108,30 @@ var DB = {
     if(signIn.error) return null;
     var prof = await sbDarvik.from('profiles').select('*').eq('login', uname).maybeSingle();
     if(prof.error || !prof.data || !prof.data.active){ try{ await sbDarvik.auth.signOut(); }catch(e){} return null; }
-    return { id: prof.data.legacy_id, name: prof.data.name, role: prof.data.role };
+    /* Permissão de acesso ao coletor (definida pelo administrador na tela
+       Usuários do painel). Administrador sempre pode. */
+    var acc = await sbDarvik.rpc('has_screen_access', { screen: 'coletor' });
+    if(acc.error || acc.data !== true){ try{ await sbDarvik.auth.signOut(); }catch(e){} return { denied: true }; }
+    /* Senha temporária gerada pelo administrador: exige criar uma nova. */
+    var mc = false;
+    try{ var m = await sbDarvik.rpc('must_change_password'); mc = !m.error && m.data === true; }catch(e){}
+    return { id: prof.data.legacy_id, name: prof.data.name, role: prof.data.role, login: uname, mustChange: mc };
+  },
+  async requestReset(username){
+    var r = await sbDarvik.rpc('request_password_reset', { p_login: String(username||'').trim().toLowerCase() });
+    if(r.error) throw r.error;
+  },
+  async saveNewPassword(newPass){
+    var r = await sbDarvik.auth.updateUser({ password: newPass });
+    if(r.error) throw r.error;
+    await sbDarvik.rpc('finish_password_change');
+  },
+  async checkCurrentPassword(pass){
+    var ses = await sbDarvik.auth.getSession();
+    var email = ses.data && ses.data.session && ses.data.session.user && ses.data.session.user.email;
+    if(!email) return false;
+    var r = await sbDarvik.auth.signInWithPassword({ email: email, password: pass });
+    return !r.error;
   },
   async products(){ var r = await sb.from('produtos').select('*'); if(r.error) throw r.error; return r.data; },
   async locations(){ var r = await sb.from('localizacoes').select('*'); if(r.error) throw r.error; return r.data; },
@@ -213,6 +236,7 @@ function renderApp(){
   app.innerHTML = '';
   if(!sb || !sbDarvik){ renderConfigMissing(); return; }
   if(!SESSION){ renderLogin(); return; }
+  if(SESSION.mustChange){ renderForcePw(); return; }
   renderHome();
 }
 
@@ -274,6 +298,7 @@ function renderLogin(){
     btn.disabled = true; btn.textContent = 'Entrando…';
     DB.login(u, p).then(function(user){
       if(!user){ showLoginError('Usuário ou senha inválidos.'); resetBtn(); return; }
+      if(user.denied){ showLoginError('Seu usuário não tem acesso ao Coletor. Fale com o administrador do sistema.'); resetBtn(); return; }
       setSession(user);
       renderApp();
     }).catch(function(err){
@@ -285,11 +310,106 @@ function renderLogin(){
   document.getElementById('btn-eye').addEventListener('click', function(){
     visible = !visible; passEl.type = visible ? 'text' : 'password'; this.innerHTML = visible ? ICON_EYE_OFF : ICON_EYE;
   });
-  // A recuperação automática de senha ainda será construída; por ora orienta a falar com o administrador.
-  document.getElementById('btn-forgot').addEventListener('click', function(){ showLoginError('Para redefinir sua senha, fale com o administrador do sistema.'); });
+  document.getElementById('btn-forgot').addEventListener('click', function(){ renderForgot(userEl.value.trim()); });
   btn.addEventListener('click', attempt);
   userEl.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); passEl.focus(); } });
   passEl.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); attempt(); } });
+}
+
+/* ============ SENHA: esqueci / troca obrigatória / trocar minha senha ============ */
+var IC_LOCK_S = '<svg class="i-left" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>';
+var IC_USER_S = '<svg class="i-left" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.4"/><path d="M4.5 20c0-3.9 3.4-7 7.5-7s7.5 3.1 7.5 7"/></svg>';
+function pwField(id, label, ph, icon, type){
+  return '<div class="cl-field"><label for="'+id+'">'+label+'</label><div class="cl-input">'+icon+'<input type="'+(type||'password')+'" id="'+id+'" placeholder="'+ph+'" autocomplete="'+(type==='text'?'username':'new-password')+'" autocapitalize="off" autocorrect="off"></div></div>';
+}
+function authShell(title, lead, body, btnId, btnLabel, linkId, linkLabel){
+  app.innerHTML =
+    '<div id="login-screen">'+
+      '<div class="cl-top"><img class="cl-logo" alt="Darvik Logistics &amp; Technology"><div class="cl-pill">Coletor</div></div>'+
+      '<div class="cl-main">'+
+        '<p class="cl-sub">'+title+'</p>'+
+        (lead ? '<p class="cl-lead">'+lead+'</p>' : '')+
+        body+
+        '<div class="cl-error" id="au-error"></div>'+
+        '<div class="cl-okmsg" id="au-ok"></div>'+
+        '<button class="cl-submit" id="'+btnId+'">'+btnLabel+'</button>'+
+        (linkId ? '<button type="button" class="cl-forgot cl-center" id="'+linkId+'">'+linkLabel+'</button>' : '')+
+      '</div>'+
+    '</div>';
+  return {
+    err: function(m){ var e=document.getElementById('au-error'); e.textContent=m; e.style.display='block'; document.getElementById('au-ok').style.display='none'; },
+    ok: function(m){ var e=document.getElementById('au-ok'); e.textContent=m; e.style.display='block'; document.getElementById('au-error').style.display='none'; },
+    clear: function(){ document.getElementById('au-error').style.display='none'; document.getElementById('au-ok').style.display='none'; }
+  };
+}
+function renderForgot(prefill){
+  var ui = authShell('Esqueci minha senha', 'Informe seu usuário. O administrador receberá o pedido e vai gerar uma senha temporária para você.',
+    pwField('f-fuser','Usuário','Digite seu usuário de acesso', IC_USER_S, 'text'), 'btn-send-reset','Enviar pedido','btn-back-login','Voltar ao login');
+  var inp = document.getElementById('f-fuser'); inp.value = prefill || '';
+  var btn = document.getElementById('btn-send-reset');
+  document.getElementById('btn-back-login').addEventListener('click', renderLogin);
+  btn.addEventListener('click', function(){
+    ui.clear();
+    var u = inp.value.trim();
+    if(!u){ ui.err('Informe seu usuário.'); return; }
+    btn.disabled = true;
+    DB.requestReset(u).then(function(){
+      ui.ok('Pedido enviado. Fale com o administrador para receber sua senha temporária.');
+    }).catch(function(){
+      ui.err('Não foi possível enviar o pedido agora. Fale diretamente com o administrador.'); btn.disabled = false;
+    });
+  });
+}
+function validNewPass(p1, p2){
+  if(p1.length < 6) return 'A nova senha precisa ter pelo menos 6 caracteres.';
+  if(p1 !== p2) return 'A confirmação não confere com a nova senha.';
+  return null;
+}
+function renderForcePw(){
+  var ui = authShell('Crie sua nova senha', 'Você entrou com uma senha temporária. Escolha agora uma senha só sua para continuar.',
+    pwField('f-np1','Nova senha','Mínimo de 6 caracteres', IC_LOCK_S) + pwField('f-np2','Confirmar nova senha','Digite de novo', IC_LOCK_S),
+    'btn-np-save','Salvar e entrar','btn-np-cancel','Cancelar e sair');
+  var btn = document.getElementById('btn-np-save');
+  document.getElementById('btn-np-cancel').addEventListener('click', function(){
+    clearSession(); try{ sbDarvik.auth.signOut(); }catch(e){} renderApp();
+  });
+  btn.addEventListener('click', function(){
+    ui.clear();
+    var p1 = document.getElementById('f-np1').value, p2 = document.getElementById('f-np2').value;
+    var e = validNewPass(p1, p2); if(e){ ui.err(e); return; }
+    btn.disabled = true;
+    DB.saveNewPassword(p1).then(function(){
+      SESSION.mustChange = false; setSession(SESSION); renderApp();
+    }).catch(function(err){
+      var m = String(err && err.message || '');
+      ui.err(/different|same/i.test(m) ? 'A nova senha precisa ser diferente da senha temporária.' : 'Não foi possível salvar a nova senha. Tente de novo.');
+      btn.disabled = false;
+    });
+  });
+}
+function renderChangePw(){
+  var ui = authShell('Trocar minha senha', '',
+    pwField('f-cp0','Senha atual','Digite sua senha atual', IC_LOCK_S) + pwField('f-cp1','Nova senha','Mínimo de 6 caracteres', IC_LOCK_S) + pwField('f-cp2','Confirmar nova senha','Digite de novo', IC_LOCK_S),
+    'btn-cp-save','Salvar nova senha','btn-cp-back','Voltar');
+  var btn = document.getElementById('btn-cp-save');
+  document.getElementById('btn-cp-back').addEventListener('click', renderHome);
+  btn.addEventListener('click', async function(){
+    ui.clear();
+    var p0 = document.getElementById('f-cp0').value, p1 = document.getElementById('f-cp1').value, p2 = document.getElementById('f-cp2').value;
+    if(!p0){ ui.err('Informe sua senha atual.'); return; }
+    var e = validNewPass(p1, p2); if(e){ ui.err(e); return; }
+    btn.disabled = true;
+    try{
+      if(!(await DB.checkCurrentPassword(p0))){ ui.err('Senha atual incorreta.'); btn.disabled = false; return; }
+      await DB.saveNewPassword(p1);
+      ui.ok('Senha alterada com sucesso.');
+      setTimeout(renderHome, 1400);
+    }catch(err){
+      var m = String(err && err.message || '');
+      ui.err(/different|same/i.test(m) ? 'A nova senha precisa ser diferente da atual.' : 'Não foi possível trocar a senha. Tente de novo.');
+      btn.disabled = false;
+    }
+  });
 }
 
 /* ============ HOME ============ */
@@ -313,11 +433,12 @@ function renderHome(){
         '<button class="op-btn" id="op-separacao"><span class="ic">'+IC_OUT+'</span><div><div class="lbl">Separação</div><div class="sub">Retirar itens para pedidos</div></div>'+CHEV+'</button>'+
         '<button class="op-btn" id="op-conferencia"><span class="ic">'+IC_CHK+'</span><div><div class="lbl">Conferência</div><div class="sub">Conferir pedidos separados</div></div>'+CHEV+'</button>'+
       '</div>'+
-      '<button class="home-logout" id="btn-logout">'+IC_LOGOUT+' Sair</button></div>'+
+      '<div class="home-links"><button class="home-logout" id="btn-change-pass">Trocar minha senha</button><button class="home-logout" id="btn-logout">'+IC_LOGOUT+' Sair</button></div></div>'+
     '</div>';
   document.getElementById('op-armazenagem').addEventListener('click', ArmazenagemFlow.start);
   document.getElementById('op-separacao').addEventListener('click', SeparacaoFlow.list);
   document.getElementById('op-conferencia').addEventListener('click', ConferenciaFlow.list);
+  document.getElementById('btn-change-pass').addEventListener('click', renderChangePw);
   document.getElementById('btn-logout').addEventListener('click', function(){
     clearSession();
     if(sbDarvik) sbDarvik.auth.signOut().catch(function(){});
