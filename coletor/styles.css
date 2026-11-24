@@ -412,3 +412,11 @@ h1,h2,h3,h4{color:#0b2a6b;}
 #login-screen .cl-forgot{margin-top:6px;}
 #login-screen .cl-submit{margin-top:20px;}
 #login-screen .cl-note{margin-top:30px;}
+
+/* ===== Senha: esqueci / troca obrigatória / trocar minha senha ===== */
+#login-screen .cl-lead{font-size:13.5px; line-height:1.45; color:#51607a; margin:-14px 0 18px;}
+#login-screen .cl-forgot.cl-center{margin:14px auto 0; text-align:center;}
+.cl-okmsg{display:none; margin:10px 0 0; padding:10px 12px; border-radius:10px; font-size:13.5px; background:rgba(26,150,98,.1); border:1px solid #9fd8bd; color:#13684a;}
+.home-links{display:flex; flex-direction:column; align-items:center; gap:0;}
+.home-links .home-logout{margin-top:14px;}
+.home-links #btn-change-pass{border-color:transparent; background:none; padding:6px 12px; font-size:13.5px; text-decoration:underline; text-underline-offset:3px;}
