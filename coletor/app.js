@@ -219,6 +219,11 @@ var DB = {
   },
   async addMovement(m){ m.id = uid('mov'); m.timestamp = new Date().toISOString(); var r = await sb.from('movimentacoes_estoque').insert(m); if(r.error) throw r.error; },
   async addAudit(a){ a.id = uid('audit'); a.timestamp = new Date().toISOString(); var r = await sb.from('auditoria').insert(a); if(r.error) throw r.error; },
+  /* Ocorrências (botão "Negar"): ficam no banco do painel (DarvikControl). */
+  async createOccurrence(p){ var r = await sbDarvik.rpc('create_occurrence', { p: p }); if(r.error) throw r.error; return r.data; },
+  async openOccurrenceKeys(){
+    try{ var r = await sbDarvik.rpc('open_occurrence_keys'); if(r.error || !r.data) return []; return r.data; }catch(e){ return []; }
+  },
   async salesOrdersByStatus(statuses){
     var r = await sb.from('pedidos_venda').select('*').in('status', statuses).order('created_at', {ascending:true});
     if(r.error) throw r.error; return r.data;
@@ -646,6 +651,56 @@ function ensureJsQr(cb){
   tryNext();
 }
 
+/* ============ NEGAR (ocorrência) ============
+   Folha de baixo para o operador negar a confirmação: Falta, Sobra ou Outros.
+   Devolve (via Promise) { kind, actual_qty, justification } ou null se cancelar. */
+function negarSheet(o){
+  return new Promise(function(resolve){
+    var kinds = o.kinds || ['FALTA','OUTROS'];
+    var labels = { FALTA:'Falta', SOBRA:'Sobra', OUTROS:'Outros' };
+    var kind = kinds[0];
+    var back = document.createElement('div'); back.className = 'sheet-back';
+    back.innerHTML =
+      '<div class="sheet" role="dialog" aria-label="Negar">'+
+        '<h3>Negar confirmação</h3>'+
+        '<p class="sheet-sub">'+esc(o.product)+' · esperado: <strong>'+o.expected+'</strong> un.</p>'+
+        '<div class="seg" id="ng-kinds">'+kinds.map(function(k){ return '<button type="button" class="seg-btn'+(k===kind?' on':'')+'" data-k="'+k+'">'+labels[k]+'</button>'; }).join('')+'</div>'+
+        '<div id="ng-qty-wrap"><label for="ng-qty" id="ng-qty-lbl"></label><input type="number" inputmode="numeric" min="0" step="1" id="ng-qty" placeholder="Quantidade correta"></div>'+
+        '<label for="ng-just" id="ng-just-lbl">Justificativa</label>'+
+        '<textarea id="ng-just" rows="3" maxlength="300" placeholder="Conte o que aconteceu"></textarea>'+
+        '<div id="ng-err" class="error-msg" style="display:none"></div>'+
+        '<button class="btn btn-primary" id="ng-send">Registrar ocorrência</button>'+
+        '<button class="btn" id="ng-cancel">Cancelar</button>'+
+      '</div>';
+    document.body.appendChild(back);
+    function sync(){
+      back.querySelectorAll('.seg-btn').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-k')===kind); });
+      document.getElementById('ng-qty-wrap').style.display = kind==='OUTROS' ? 'none' : 'block';
+      document.getElementById('ng-qty-lbl').textContent = kind==='FALTA' ? 'Quantos há de verdade? (menos que '+o.expected+')' : 'Quantos há de verdade? (mais que '+o.expected+')';
+      document.getElementById('ng-just-lbl').textContent = kind==='OUTROS' ? 'Justificativa (obrigatória)' : 'Justificativa (opcional)';
+    }
+    function err(m){ var e=document.getElementById('ng-err'); e.textContent=m; e.style.display='block'; }
+    function close(v){ back.remove(); resolve(v); }
+    back.querySelectorAll('.seg-btn').forEach(function(b){ b.addEventListener('click', function(){ kind = b.getAttribute('data-k'); document.getElementById('ng-err').style.display='none'; sync(); }); });
+    document.getElementById('ng-cancel').addEventListener('click', function(){ close(null); });
+    back.addEventListener('click', function(e){ if(e.target===back) close(null); });
+    document.getElementById('ng-send').addEventListener('click', function(){
+      var just = document.getElementById('ng-just').value.trim(), qty = null;
+      if(kind==='OUTROS'){
+        if(just.length < 3){ err('Escreva a justificativa.'); return; }
+      } else {
+        var raw = document.getElementById('ng-qty').value;
+        if(raw==='' || !/^\d+$/.test(raw)){ err('Informe a quantidade correta (número inteiro).'); return; }
+        qty = Number(raw);
+        if(kind==='FALTA' && !(qty < o.expected)){ err('Na falta, a quantidade correta precisa ser menor que '+o.expected+'.'); return; }
+        if(kind==='SOBRA' && !(qty > o.expected)){ err('Na sobra, a quantidade correta precisa ser maior que '+o.expected+'.'); return; }
+      }
+      close({ kind: kind, actual_qty: qty, justification: just || null });
+    });
+    sync();
+  });
+}
+
 /* ============ ARMAZENAGEM ============
    Igual à Separação: a tela mostra TODAS as armazenagens pendentes (uma por
    item recebido) e o operador escolhe qual iniciar — por exemplo, a que tem
@@ -668,14 +723,17 @@ var ArmazenagemFlow = (function(){
       '<div class="view"><div id="list-area"><div class="center-msg"><span class="spinner"></span></div></div></div>';
     bindBack(renderHome);
     DB.syncStorageFromDarvik().catch(function(){ return 0; }).then(function(novas){
-      return Promise.all([loadRefs(), DB.pendingStorageTasks()]).then(function(res){ res.novas = novas; return res; });
+      return Promise.all([loadRefs(), DB.pendingStorageTasks(), DB.openOccurrenceKeys()]).then(function(res){ res.novas = novas; return res; });
     }).then(function(res){
       if(res.novas>0) toast(res.novas+(res.novas===1?' armazenagem nova trazida':' armazenagens novas trazidas')+' do painel.','good');
-      var all = res[1].slice().sort(function(a,b){ return taskOrder(a)-taskOrder(b); });
+      var parked = {}; (res[2]||[]).forEach(function(k){ if(k.stage==='ARMAZENAGEM') parked[k.ref_item_id] = 1; });
+      var all = res[1].filter(function(t){ return !parked[t.id]; }).sort(function(a,b){ return taskOrder(a)-taskOrder(b); });
+      var nPark = res[1].length - all.length;
       var tasks = currentFilter ? all.filter(function(t){ return t.product_id===currentFilter; }) : all;
       var area = document.getElementById('list-area');
       var html = '<div class="list-head"><div class="list-count"><strong>'+all.length+'</strong> '+(all.length===1?'armazenagem pendente':'armazenagens pendentes')+'</div>'+
                  '<div class="list-actions"><button class="btn btn-sm" id="btn-refresh">↻</button><button class="btn btn-sm" id="btn-scan-filter">📷 Bipar item</button></div></div>';
+      if(nPark>0) html += '<div class="filter-note">'+nPark+(nPark===1?' armazenagem parada':' armazenagens paradas')+' por ocorrência aberta (aguardando o escritório resolver).</div>';
       if(currentFilter){
         var fp = refs.products.find(function(p){ return p.id===currentFilter; });
         html += '<div class="filter-note">Mostrando só: <strong>'+esc(fp?fp.name:'(produto)')+'</strong> <button class="link-btn" id="btn-clear-filter">Ver todas</button></div>';
@@ -733,6 +791,7 @@ var ArmazenagemFlow = (function(){
       variationId: t.variation_id || null,
       qty: Number(t.qty_pending),
       taskIds: [t.id],
+      poId: t.po_id,
       suggestedLocationId: t.suggested_location_id
     });
   }
@@ -775,8 +834,31 @@ var ArmazenagemFlow = (function(){
           '</div>'+
           '<p style="text-align:center;color:var(--text-dim);font-size:13px">Confirme se a quantidade e o local estão corretos.</p>'+
           '<button class="btn btn-primary" id="btn-confirm-storage">Confirmar armazenagem</button>'+
+          '<button class="btn btn-danger btn-deny" id="btn-deny-storage">Negar</button>'+
         '</div>';
       bindBack(renderLocationStep);
+      document.getElementById('btn-deny-storage').addEventListener('click', function(){
+        var denyBtn = this;
+        negarSheet({ product: productLabel(product, group.variationId), expected: group.qty, kinds:['FALTA','SOBRA','OUTROS'] }).then(function(r){
+          if(!r) return;
+          denyBtn.disabled = true;
+          var qtyIn = r.kind==='OUTROS' ? 0 : Number(r.actual_qty);
+          DB.createOccurrence({ stage:'ARMAZENAGEM', kind:r.kind, expected_qty:group.qty, actual_qty:r.actual_qty, justification:r.justification,
+              product_id:product.id, variation_id:group.variationId||null, product_label:productLabel(product, group.variationId),
+              ref_type:'compra', ref_id:group.poId||null, ref_item_id:group.taskIds[0], location_code:chosenLocation.code })
+            .then(function(){
+              /* Falta/Sobra: dá entrada agora só no que foi confirmado; a diferença fica na ocorrência. */
+              if(qtyIn>0){
+                return DB.addStock(product.id, group.variationId, chosenLocation.id, qtyIn)
+                  .then(function(){ return DB.addMovement(Object.assign({ type:'entrada', product_id:product.id, variation_id:group.variationId, quantity:qtyIn, location_id:chosenLocation.id, ref_type:'armazenagem_coletor', note:'Armazenagem com ocorrência ('+r.kind.toLowerCase()+')' }, auditCtx())); });
+              }
+            })
+            .then(function(){ if(r.kind!=='OUTROS') return DB.closeStorageTasks(group.taskIds); })
+            .then(function(){ return DB.addAudit(Object.assign({ action:'Abriu ocorrência (armazenagem)', entity_type:'estoque', entity_id:product.id, details:r.kind+' · esperado '+group.qty+(r.actual_qty!=null?' · real '+r.actual_qty:'') }, auditCtx())); })
+            .then(function(){ toast('Ocorrência registrada. O escritório foi avisado.','good'); renderList(); })
+            .catch(function(err){ denyBtn.disabled=false; toast('Não foi possível registrar a ocorrência.'+errDetail(err),'bad'); });
+        });
+      });
       document.getElementById('btn-confirm-storage').addEventListener('click', function(){
         var btn = this; btn.disabled = true; btn.textContent = 'Salvando…';
         DB.addStock(product.id, group.variationId, chosenLocation.id, group.qty)
@@ -811,13 +893,14 @@ var SeparacaoFlow = (function(){
   function openOrder(orderId){
     app.innerHTML = topbarHtml('Separação', {back:true}) + '<div class="view"><div class="center-msg"><span class="spinner"></span></div></div>';
     bindBack(list);
-    Promise.all([DB.orderItems(orderId), DB.products(), DB.locations()]).then(function(res){
-      var items = res[0], products = res[1], locations = res[2];
-      prepareAndRun(orderId, items, products, locations);
+    Promise.all([DB.orderItems(orderId), DB.products(), DB.locations(), DB.openOccurrenceKeys()]).then(function(res){
+      var items = res[0], products = res[1], locations = res[2], parked = {};
+      (res[3]||[]).forEach(function(k){ if(k.stage==='SEPARACAO') parked[k.ref_item_id] = 1; });
+      prepareAndRun(orderId, items, products, locations, parked);
     }).catch(function(){ toast('Erro ao carregar pedido.','bad'); list(); });
   }
 
-  function prepareAndRun(orderId, items, products, locations){
+  function prepareAndRun(orderId, items, products, locations, parked){
     var pending = items.filter(function(i){ return !i.separated; });
     var needsLocation = pending.filter(function(i){ return !i.location_id; });
     var assignPromises = needsLocation.map(function(it){
@@ -830,16 +913,19 @@ var SeparacaoFlow = (function(){
     Promise.all(assignPromises).then(function(){
       return DB.updateOrder(orderId, { status:'EM_SEPARACAO' });
     }).then(function(){
-      runItemLoop(orderId, items, products, locations);
+      runItemLoop(orderId, items, products, locations, parked);
     }).catch(function(){ toast('Erro ao preparar separação.','bad'); list(); });
   }
 
-  function runItemLoop(orderId, items, products, locations){
+  function runItemLoop(orderId, items, products, locations, parked){
     var stepState = 'location';
     step();
 
     function step(){
-      var item = items.find(function(i){ return !i.separated; });
+      var item = items.find(function(i){ return !i.separated && !parked[i.id]; });
+      if(!item && items.some(function(i){ return !i.separated; })){
+        toast('Itens com ocorrência aberta ficam parados. O pedido segue na separação até o escritório resolver.','good'); list(); return;
+      }
       if(!item){
         DB.updateOrder(orderId, {status:'EM_CONFERENCIA'})
           .then(function(){ return DB.addAudit(Object.assign({action:'Concluiu separação', entity_type:'pedido_venda', entity_id:orderId}, auditCtx())); })
@@ -888,7 +974,42 @@ var SeparacaoFlow = (function(){
         app.querySelector('.view').innerHTML =
           '<div class="qty-confirm"><div class="lbl">'+esc(productLabel(product,item.variation_id))+'</div><div class="num">'+item.qty+'</div><div class="lbl">unidades para separar</div></div>'+
           '<p style="text-align:center;color:var(--text-dim);font-size:13px">Local e produto confirmados. Confirme a quantidade retirada.</p>'+
-          '<button class="btn btn-primary" id="btn-confirm-pick">Confirmar quantidade</button>';
+          '<button class="btn btn-primary" id="btn-confirm-pick">Confirmar quantidade</button>'+
+          '<button class="btn btn-danger btn-deny" id="btn-deny-pick">Negar</button>';
+        document.getElementById('btn-deny-pick').addEventListener('click', function(){
+          var dbtn = this; dbtn.disabled = true;
+          /* Antes de registrar a falta: tem esse item em outro endereço? */
+          DB.stockLocationsFor(item.product_id, item.variation_id).then(function(st){
+            var others = st.filter(function(x){ return x.location_id!==item.location_id && Number(x.quantity)>0; });
+            if(others.length) showOtherAddress(others); else openDeny();
+          }).catch(function(){ openDeny(); });
+          function openDeny(){
+            dbtn.disabled = false;
+            negarSheet({ product: productLabel(product, item.variation_id), expected: item.qty, kinds:['FALTA','OUTROS'] }).then(function(r){
+              if(!r) return;
+              dbtn.disabled = true;
+              DB.createOccurrence({ stage:'SEPARACAO', kind:r.kind, expected_qty:item.qty, actual_qty:r.actual_qty, justification:r.justification,
+                  product_id:item.product_id, variation_id:item.variation_id||null, product_label:productLabel(product, item.variation_id),
+                  ref_type:'venda', ref_id:orderId, ref_item_id:item.id, location_code:loc.code })
+                .then(function(){ return DB.addAudit(Object.assign({ action:'Abriu ocorrência (separação)', entity_type:'pedido_venda', entity_id:orderId, details:productLabel(product,item.variation_id)+' · '+r.kind }, auditCtx())); })
+                .then(function(){ parked[item.id] = 1; stepState='location'; toast('Ocorrência registrada. O item ficou parado.','good'); step(); })
+                .catch(function(err){ dbtn.disabled=false; toast('Não foi possível registrar a ocorrência.'+errDetail(err),'bad'); });
+            });
+          }
+          function showOtherAddress(others){
+            app.querySelector('.view').innerHTML =
+              '<div class="qty-confirm"><div class="lbl">'+esc(productLabel(product,item.variation_id))+'</div><div class="lbl">Tem esse item em outro endereço?</div></div>'+
+              others.map(function(x){ var l = locations.find(function(z){ return z.id===x.location_id; });
+                return '<div class="list-item"><div><div class="code">'+esc(l?l.code:'(endereço)')+'</div><div class="meta">'+Number(x.quantity)+' un. em estoque</div></div><button class="btn btn-primary btn-sm" data-use="'+esc(x.location_id)+'">Usar este</button></div>'; }).join('')+
+              '<button class="btn btn-danger btn-deny" id="btn-no-other">Não, registrar a falta</button>';
+            app.querySelectorAll('[data-use]').forEach(function(b){ b.addEventListener('click', function(){
+              var lid = b.getAttribute('data-use'); b.disabled = true;
+              DB.updateItem(item.id, { location_id: lid }).then(function(){ item.location_id = lid; stepState='location'; step(); })
+                .catch(function(){ b.disabled=false; toast('Erro ao trocar o endereço.','bad'); });
+            }); });
+            document.getElementById('btn-no-other').addEventListener('click', openDeny);
+          }
+        });
         document.getElementById('btn-confirm-pick').addEventListener('click', function(){
           var btn=this; btn.disabled=true; btn.textContent='Salvando…';
           DB.addStock(item.product_id, item.variation_id, item.location_id, -item.qty)
@@ -923,15 +1044,19 @@ var ConferenciaFlow = (function(){
   function openOrder(orderId){
     app.innerHTML = topbarHtml('Conferência', {back:true}) + '<div class="view"><div class="center-msg"><span class="spinner"></span></div></div>';
     bindBack(list);
-    Promise.all([DB.orderItems(orderId), DB.products()]).then(function(res){
-      runItemLoop(orderId, res[0], res[1]);
+    Promise.all([DB.orderItems(orderId), DB.products(), DB.openOccurrenceKeys()]).then(function(res){
+      var parked = {}; (res[2]||[]).forEach(function(k){ if(k.stage==='CONFERENCIA') parked[k.ref_item_id] = 1; });
+      runItemLoop(orderId, res[0], res[1], parked);
     }).catch(function(){ toast('Erro ao carregar pedido.','bad'); list(); });
   }
 
-  function runItemLoop(orderId, items, products){
+  function runItemLoop(orderId, items, products, parked){
     step();
     function step(){
-      var item = items.find(function(i){ return !i.conferred; });
+      var item = items.find(function(i){ return !i.conferred && !parked[i.id]; });
+      if(!item && items.some(function(i){ return !i.conferred; })){
+        toast('Itens com ocorrência aberta ficam parados. O pedido segue na conferência até o escritório resolver.','good'); list(); return;
+      }
       if(!item){
         DB.updateOrder(orderId, {status:'CONFERIDO'})
           .then(function(){ return DB.addAudit(Object.assign({action:'Concluiu conferência', entity_type:'pedido_venda', entity_id:orderId}, auditCtx())); })
@@ -954,7 +1079,21 @@ var ConferenciaFlow = (function(){
           app.querySelector('.view').innerHTML =
             '<div class="qty-confirm"><div class="lbl">'+esc(productLabel(product,item.variation_id))+'</div><div class="num">'+item.qty+'</div><div class="lbl">unidades separadas</div></div>'+
             '<p style="text-align:center;color:var(--text-dim);font-size:13px">Confira se a quantidade corresponde ao que foi separado.</p>'+
-            '<button class="btn btn-primary" id="btn-confirm-conf">Confirmar item</button>';
+            '<button class="btn btn-primary" id="btn-confirm-conf">Confirmar item</button>'+
+            '<button class="btn btn-danger btn-deny" id="btn-deny-conf">Negar</button>';
+          document.getElementById('btn-deny-conf').addEventListener('click', function(){
+            var dbtn = this;
+            negarSheet({ product: productLabel(product, item.variation_id), expected: item.qty, kinds:['FALTA','OUTROS'] }).then(function(r){
+              if(!r) return;
+              dbtn.disabled = true;
+              DB.createOccurrence({ stage:'CONFERENCIA', kind:r.kind, expected_qty:item.qty, actual_qty:r.actual_qty, justification:r.justification,
+                  product_id:item.product_id, variation_id:item.variation_id||null, product_label:productLabel(product, item.variation_id),
+                  ref_type:'venda', ref_id:orderId, ref_item_id:item.id, location_code:item.location_id||null })
+                .then(function(){ return DB.addAudit(Object.assign({ action:'Abriu ocorrência (conferência)', entity_type:'pedido_venda', entity_id:orderId, details:productLabel(product,item.variation_id)+' · '+r.kind }, auditCtx())); })
+                .then(function(){ parked[item.id] = 1; toast('Ocorrência registrada. O item ficou parado.','good'); step(); })
+                .catch(function(err){ dbtn.disabled=false; toast('Não foi possível registrar a ocorrência.'+errDetail(err),'bad'); });
+            });
+          });
           document.getElementById('btn-confirm-conf').addEventListener('click', function(){
             var btn=this; btn.disabled=true; btn.textContent='Salvando…';
             DB.updateItem(item.id, {conferred:true})
