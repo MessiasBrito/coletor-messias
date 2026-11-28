@@ -420,3 +420,16 @@ h1,h2,h3,h4{color:#0b2a6b;}
 .home-links{display:flex; flex-direction:column; align-items:center; gap:0;}
 .home-links .home-logout{margin-top:14px;}
 .home-links #btn-change-pass{border-color:transparent; background:none; padding:6px 12px; font-size:13.5px; text-decoration:underline; text-underline-offset:3px;}
+
+/* ---- Negar / ocorrências ---- */
+.btn-deny{margin-top:10px;}
+.sheet-back{position:fixed; inset:0; background:rgba(11,42,107,.45); display:flex; align-items:flex-end; justify-content:center; z-index:350;}
+.sheet{background:#fff; width:100%; max-width:520px; border-radius:20px 20px 0 0; padding:20px 18px 22px; max-height:90vh; overflow:auto; box-shadow:0 -8px 30px rgba(11,42,107,.25);}
+.sheet h3{margin:0 0 4px; font-size:19px; color:#0b2a6b;}
+.sheet-sub{margin:0 0 14px; color:#51607a; font-size:14px;}
+.sheet label{display:block; margin:12px 0 6px; font-size:13px; font-weight:600; color:#0b2a6b;}
+.sheet input[type=number], .sheet textarea{width:100%; box-sizing:border-box; border:1.5px solid #c3d6f6; border-radius:12px; padding:12px; font-size:16px; font-family:inherit;}
+.sheet .btn{margin-top:12px;}
+.seg{display:flex; gap:8px;}
+.seg-btn{flex:1; padding:11px 8px; border-radius:12px; border:1.5px solid #c3d6f6; background:#fff; color:#0b2a6b; font-size:14px; font-weight:600;}
+.seg-btn.on{background:#0b2a6b; color:#fff; border-color:#0b2a6b;}
