@@ -94,6 +94,7 @@ function beep(ok){
 }
 
 /* ============ AÇÕES DE BANCO (Supabase) ============ */
+function errDetail(e){ var t=String((e&&(e.message||e.error_description||e.code))||e||'').replace(/\s+/g,' ').slice(0,140); return t ? ' (Detalhe técnico: '+t+')' : ''; }
 var DB = {
   /* Login de verdade contra o DARVIK (Supabase Auth), não mais contra a
      tabela "colaboradores" deste projeto. Passos: 1) traduz o usuário
@@ -355,8 +356,8 @@ function renderForgot(prefill){
     btn.disabled = true;
     DB.requestReset(u).then(function(){
       ui.ok('Pedido enviado. Fale com o administrador para receber sua senha temporária.');
-    }).catch(function(){
-      ui.err('Não foi possível enviar o pedido agora. Fale diretamente com o administrador.'); btn.disabled = false;
+    }).catch(function(err){
+      ui.err('Não foi possível enviar o pedido agora. Fale diretamente com o administrador.'+errDetail(err)); btn.disabled = false;
     });
   });
 }
@@ -382,7 +383,7 @@ function renderForcePw(){
       SESSION.mustChange = false; setSession(SESSION); renderApp();
     }).catch(function(err){
       var m = String(err && err.message || '');
-      ui.err(/different|same/i.test(m) ? 'A nova senha precisa ser diferente da senha temporária.' : 'Não foi possível salvar a nova senha. Tente de novo.');
+      ui.err(/different|same/i.test(m) ? 'A nova senha precisa ser diferente da senha temporária.' : 'Não foi possível salvar a nova senha. Tente de novo.'+errDetail(err));
       btn.disabled = false;
     });
   });
@@ -406,7 +407,7 @@ function renderChangePw(){
       setTimeout(renderHome, 1400);
     }catch(err){
       var m = String(err && err.message || '');
-      ui.err(/different|same/i.test(m) ? 'A nova senha precisa ser diferente da atual.' : 'Não foi possível trocar a senha. Tente de novo.');
+      ui.err(/different|same/i.test(m) ? 'A nova senha precisa ser diferente da atual.' : 'Não foi possível trocar a senha. Tente de novo.'+errDetail(err));
       btn.disabled = false;
     }
   });
